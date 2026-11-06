@@ -10,6 +10,7 @@ export interface NormalizedRecord {
   sourceRow: number;
   oldId: number;
   values: Record<string, Scalar>;
+  invalidFields: string[];
 }
 
 export interface RowError {
@@ -30,36 +31,40 @@ export function prepareChunk(
   for (const record of records) {
     const values: Record<string, Scalar> = {};
     const rowErrors: RowError[] = [];
+    const invalidFields: string[] = [];
     for (const column of columns) {
       const parsed = coerceValue(column, record.values[column.name]);
       if (!parsed.ok) {
-        rowErrors.push({
-          sourceRow: record.sourceRow,
-          oldId: null,
-          field: column.name,
-          message: parsed.message,
-        });
+        values[column.name] = null;
+        invalidFields.push(column.name);
+        if (column.name !== 'date_of_birth') {
+          rowErrors.push({
+            sourceRow: record.sourceRow,
+            oldId: null,
+            field: column.name,
+            message: parsed.message,
+          });
+        }
       } else {
         values[column.name] = parsed.value;
       }
     }
     const oldValue = values[table.businessKey];
     const oldIdText = typeof oldValue === 'number' ? String(oldValue) : null;
-    if (rowErrors.length > 0) {
-      for (const error of rowErrors) error.oldId = oldIdText;
-      errors.push(...rowErrors);
-      continue;
-    }
+    for (const error of rowErrors) error.oldId = oldIdText;
+    errors.push(...rowErrors);
     if (typeof oldValue !== 'number') {
-      errors.push({
-        sourceRow: record.sourceRow,
-        oldId: null,
-        field: table.businessKey,
-        message: 'Old ID is required',
-      });
+      if (!rowErrors.some((error) => error.field === table.businessKey)) {
+        errors.push({
+          sourceRow: record.sourceRow,
+          oldId: null,
+          field: table.businessKey,
+          message: 'Old ID is required',
+        });
+      }
       continue;
     }
-    normalized.push({ sourceRow: record.sourceRow, oldId: oldValue, values });
+    normalized.push({ sourceRow: record.sourceRow, oldId: oldValue, values, invalidFields });
   }
 
   const counts = new Map<number, number>();

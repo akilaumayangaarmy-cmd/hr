@@ -50,6 +50,9 @@ function App() {
   );
   const mappedTargets = new Set(Object.values(mapping).filter(Boolean));
   const oldIdMapped = Boolean(table && Object.values(mapping).includes(table.columns.find((column) => column.businessKey)?.name ?? 'old_id'));
+  const unmappedRequiredColumns = availableColumns.filter(
+    (column) => column.requiredOnInsert && !mappedTargets.has(column.name),
+  );
 
   useEffect(() => {
     fetch(`${API_URL}/tables`)
@@ -276,6 +279,10 @@ function App() {
             <span>{oldIdMapped ? '✓' : '!'}</span>
             {oldIdMapped ? <span><b>old_id is mapped</b> — records will be inserted or updated using this identifier.</span> : <span><b>Map old_id to continue.</b> This identifier is required, numeric, and unique across the uploaded file.</span>}
           </div>
+          {unmappedRequiredColumns.length > 0 && <div className="key-warning">
+            <span>!</span>
+            <span><b>New rows will be skipped unless these required fields are mapped:</b> {unmappedRequiredColumns.map((column) => column.name).join(', ')}.</span>
+          </div>}
           <details className="preview">
             <summary>Preview first 5 rows</summary>
             <div className="table-scroll"><table><thead><tr>{upload.headers.map((header, index) => <th key={`${header}-${index}`}>{header}</th>)}</tr></thead><tbody>{upload.rows.slice(0, 5).map((row) => <tr key={row.sourceRow}>{upload.headers.map((_, index) => <td key={index}>{displayValue(row.values[index])}</td>)}</tr>)}</tbody></table></div>
@@ -292,6 +299,7 @@ function App() {
         {result && <section className="result-card" aria-live="polite">
           <div className="result-heading"><div className="result-check">{result.errors.length ? '!' : '✓'}</div><div><h2>{busy ? 'Import in progress' : result.errors.length ? 'Import completed with row errors' : 'Import completed'}</h2><p>{result.received.toLocaleString()} of {upload?.rows.length.toLocaleString()} rows processed</p></div></div>
           <div className="result-stats"><div><b>{result.inserted.toLocaleString()}</b><span>Inserted</span></div><div><b>{result.updated.toLocaleString()}</b><span>Updated</span></div><div><b>{result.unchanged.toLocaleString()}</b><span>Unchanged</span></div><div className={result.errors.length ? 'stat-error' : ''}><b>{result.errors.length.toLocaleString()}</b><span>Row errors</span></div></div>
+          {!busy && result.inserted === 0 && result.errors.length > 0 && <p role="status">No rows were inserted. Review the row errors below; required fields missing from the mapping prevent new rows from being added.</p>}
           {result.errors.length > 0 && <details className="error-details"><summary>View row errors</summary><div className="error-list">{result.errors.slice(0, 100).map((item, index) => <div key={`${item.sourceRow}-${item.field}-${index}`}><b>Row {item.sourceRow}{item.field ? ` · ${item.field}` : ''}</b><span>{item.message}</span></div>)}{result.errors.length > 100 && <p>Showing first 100 errors.</p>}</div></details>}
         </section>}
         <footer className="page-footer"><span>HR DATA MIGRATION</span><span>Excel import utility <i>·</i> Oracle merge</span></footer>

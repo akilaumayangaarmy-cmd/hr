@@ -5,7 +5,7 @@ Browser-based Excel/CSV mapping UI with a NestJS API that validates rows and ups
 ## Requirements
 
 - Node.js 20+
-- Oracle Database with the target table and the lookup tables defined in `backend/src/metadata/table-registry.ts`
+- Oracle Database; the Oracle user must have permission to create tables, and the backend creates only `02_Temp_members_master_data` on startup if it does not exist. Lookup tables are not created automatically.
 - Oracle Thin mode by default; Oracle Instant Client is optional
 
 ## Run locally
@@ -22,8 +22,9 @@ The UI defaults to the API at `http://localhost:3000/api/migration`. Set `VITE_A
 - Supported files: `.xlsx`, `.xls`, and `.csv`; the first worksheet is used.
 - File limit: 50 MB and 250,000 data rows. Rows are sent in batches of 500.
 - `old_id` must be explicitly mapped and numeric. The UI checks uniqueness across the whole uploaded file, and the API also checks each submitted batch.
-- Column types, required insert fields, lookup values, and row errors are checked by the API.
-- Lookup fields accept an existing UUID, an `old_id`, or an unambiguous code. A UUID is accepted as-is; numeric and code values are resolved against the corresponding lookup table.
+- Column types, required insert fields, and row errors are checked by the API.
+- A row with a valid `old_id` is still inserted or updated when another mapped field is invalid. Invalid fields are stored as `NULL` on insert and left unchanged on update; row-level validation errors are returned. Invalid `date_of_birth` values specifically become `NULL` without a row error. Invalid or duplicate `old_id` values cannot be upserted.
+- The selected database field is the staging column receiving each source value. Lookup values are not resolved or replaced; string values are preserved as supplied, and only type validation/conversion needed for Oracle number and date columns is applied. Lookup columns allow up to 255 bytes to hold names as well as IDs.
 - New lookup rows get generated UUIDs. Inserts and updates execute in a transaction per batch; rows that fail validation are reported while valid rows in that batch proceed.
 
 ## API

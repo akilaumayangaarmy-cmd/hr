@@ -50,15 +50,15 @@ function memberFlag(name: string, opts?: { nullable?: boolean; databaseDefault?:
 }
 
 function fk(name: string, table: string): ColumnDef {
-  return memberString(name, 36, false, table);
+  return memberString(name, 255, false, table);
 }
 
 const memberColumns: ColumnDef[] = [
   memberFlag('is_active', { nullable: false, databaseDefault: 1 }),
-  memberNumber('e_number', true),
-  memberString('regiment_number', 100, true),
-  memberString('name', 255, true),
-  memberString('address', 1000, true),
+  memberNumber('e_number'),
+  memberString('regiment_number', 100),
+  memberString('name', 255),
+  memberString('address', 1000),
   fk('province_id', 'provinces'),
   fk('district_id', 'districts'),
   fk('divisional_secretariat_id', 'divisional_secretariats'),
@@ -215,8 +215,9 @@ function lookup(opts: {
     description: opts.description,
     group: opts.group,
     loadOrder: opts.loadOrder,
-    physicalName: opts.key.toUpperCase(),
+    physicalName: opts.key,
     quoteIdentifiers: false,
+    quoteTableName: true,
     businessKey: 'old_id',
     surrogateKey: 'id',
     columns: referenceColumns(opts.parents ?? []),
@@ -362,7 +363,7 @@ export function toTableMeta(table: TableDef): TableMeta {
     description: table.description,
     group: table.group,
     loadOrder: table.loadOrder,
-    displayName: table.quoteIdentifiers ? `"${table.physicalName}"` : table.physicalName,
+    displayName: table.quoteIdentifiers || table.quoteTableName ? `"${table.physicalName}"` : table.physicalName,
     businessKey: table.businessKey,
     surrogateKey: table.surrogateKey,
     columns,

@@ -45,7 +45,10 @@ export function coerceValue(column: ColumnDef, value: unknown): CoerceResult {
   if (typeof value === 'string' && SPREADSHEET_ERROR.test(value.trim())) {
     return { ok: false, message: `${column.label} contains spreadsheet error ${value.trim()}` };
   }
-  if (isBlank(value)) {
+  const blank = column.type === 'string'
+    ? value == null || value === ''
+    : isBlank(value);
+  if (blank) {
     if (column.generateOnInsert) return { ok: true, value: null };
     if (!column.nullable) return { ok: false, message: `${column.label} is required` };
     return { ok: true, value: null };
@@ -94,7 +97,7 @@ function parseString(column: ColumnDef, value: unknown): CoerceResult {
     if (Number.isNaN(value.getTime())) return { ok: false, message: `${column.label} is an invalid date` };
     text = formatDateOnly(value);
   } else if (typeof value === 'string') {
-    text = value.replace(/^\uFEFF/, '').trim();
+    text = value;
   } else {
     return { ok: false, message: `${column.label} must be text` };
   }

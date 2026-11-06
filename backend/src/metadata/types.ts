@@ -24,6 +24,7 @@ export interface TableDef {
   loadOrder: number;
   physicalName: string;
   quoteIdentifiers: boolean;
+  quoteTableName?: boolean;
   businessKey: 'old_id';
   surrogateKey: 'id' | null;
   columns: ColumnDef[];
