@@ -7,6 +7,7 @@ import { MAX_CHUNK_ROWS } from '../limits';
 import { buildMergeStatement, toMergePayload } from './merge-builder';
 import { IncomingRecord, NormalizedRecord, prepareChunk } from './prepare-chunk';
 import { planChunk } from './plan-chunk';
+import { resolvePhysicalTable } from './physical-columns';
 import { OracleService } from '../oracle/oracle.service';
 
 export interface ColumnMapping {
@@ -30,9 +31,17 @@ export class MigrationService {
   constructor(private readonly oracle: OracleService) {}
 
   async upsert(input: UpsertRequest) {
-    const { table, columns, records } = this.validateRequest(input);
+    const { table: metadataTable, columns: mappedMetadataColumns, records } = this.validateRequest(input);
     return this.oracle.withConnection((connection) =>
       this.oracle.withTransaction(connection, async () => {
+        const table = metadataTable.surrogateKey
+          ? await this.resolveLookupTable(connection, metadataTable, mappedMetadataColumns)
+          : metadataTable;
+        const columns = mappedMetadataColumns.map((column) => {
+          const resolved = table.columns.find((item) => item.name === column.name);
+          if (!resolved) throw new Error(`Column metadata is missing for ${column.name}`);
+          return resolved;
+        });
         const prepared = prepareChunk(table, columns, records);
         const existingOldIds = await this.findExistingIds(connection, table, prepared.rows.map((row) => row.oldId));
         const plan = planChunk({
@@ -141,5 +150,27 @@ export class MigrationService {
     const result = await connection.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_OBJECT });
     const rows = (result.rows ?? []) as Array<{ OLD_ID?: unknown }>;
     return rows.map((row) => Number(row.OLD_ID)).filter(Number.isSafeInteger);
+  }
+
+  private async resolveLookupTable(
+    connection: oracledb.Connection,
+    table: TableDef,
+    mappedColumns: ColumnDef[],
+  ): Promise<TableDef> {
+    const result = await connection.execute<{ COLUMN_NAME: string }>(
+      'SELECT COLUMN_NAME AS "COLUMN_NAME" FROM USER_TAB_COLUMNS WHERE TABLE_NAME = :tableName',
+      { tableName: table.physicalName },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const availableColumns = (result.rows ?? []).map((row) => row.COLUMN_NAME);
+    const requiredColumns = new Set([
+      ...mappedColumns.map((column) => column.name),
+      table.businessKey,
+      ...(table.surrogateKey ? [table.surrogateKey] : []),
+      ...table.columns
+        .filter((column) => column.databaseDefault !== undefined && !mappedColumns.some((item) => item.name === column.name))
+        .map((column) => column.name),
+    ]);
+    return resolvePhysicalTable(table, availableColumns, [...requiredColumns]);
   }
 }

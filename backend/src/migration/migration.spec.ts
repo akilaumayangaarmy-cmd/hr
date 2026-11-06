@@ -4,6 +4,7 @@ import { getTable, MEMBER_TABLE_KEY } from '../metadata/table-registry';
 import { coerceValue } from './coercion';
 import { buildMergeStatement, toMergePayload } from './merge-builder';
 import { prepareChunk } from './prepare-chunk';
+import { resolvePhysicalTable } from './physical-columns';
 
 const memberTable = getTable(MEMBER_TABLE_KEY);
 if (!memberTable) throw new Error('Member table metadata is missing');
@@ -30,6 +31,24 @@ describe('migration validation and SQL generation', () => {
     expect(sql).toContain('CONSTRAINT PK_PROVINCES PRIMARY KEY (ID)');
     expect(sql).toContain('CONSTRAINT UQ_PROVINCES_OLD_ID UNIQUE (OLD_ID)');
     expect(sql).not.toContain(',,');
+  });
+
+  it('uses the actual quoted lowercase columns when upserting lookup tables', () => {
+    const provinces = getTable('provinces');
+    if (!provinces) throw new Error('Provinces table metadata is missing');
+    const physical = resolvePhysicalTable(
+      provinces,
+      ['id', 'name', 'code', 'description', 'is_active', 'old_id'],
+      ['id', 'name', 'old_id', 'is_active'],
+    );
+    expect(physical.quoteIdentifiers).toBe(true);
+    expect(physical.columns.find((column) => column.name === 'old_id')?.physicalName).toBe('old_id');
+    const oldId = physical.columns.find((column) => column.name === 'old_id');
+    const name = physical.columns.find((column) => column.name === 'name');
+    if (!oldId || !name) throw new Error('Resolved provinces column metadata is missing');
+    const sql = buildMergeStatement(physical, [oldId, name]);
+    expect(sql).toContain('ON (t."old_id" = s.c_old_id)');
+    expect(sql).toContain('INSERT (\n  "name",');
   });
 
   it('keeps long lookup constraint names within Oracle identifier limits', () => {
