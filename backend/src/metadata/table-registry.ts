@@ -251,7 +251,7 @@ const TABLES: TableDef[] = [
     description: 'District reference data.',
     group: 'geography',
     loadOrder: 11,
-    parents: [{ name: 'province_id', table: 'provinces' }],
+    parents: [{ name: 'provinceId', table: 'provinces' }],
   }),
   lookup({
     key: 'divisional_secretariats',
@@ -259,7 +259,7 @@ const TABLES: TableDef[] = [
     description: 'Divisional secretariat reference data.',
     group: 'geography',
     loadOrder: 12,
-    parents: [{ name: 'district_id', table: 'districts' }],
+    parents: [{ name: 'districtId', table: 'districts' }],
   }),
   lookup({
     key: 'gn_divisions',
@@ -275,7 +275,6 @@ const TABLES: TableDef[] = [
     description: 'Electorate division reference data.',
     group: 'geography',
     loadOrder: 14,
-    parents: [{ name: 'province_id', table: 'provinces' }],
   }),
   lookup({
     key: 'banks',
@@ -285,7 +284,7 @@ const TABLES: TableDef[] = [
     loadOrder: 20,
   }),
   lookup({
-    key: 'bank_branches',
+    key: 'branches',
     label: 'Bank branches',
     description: 'Bank branch reference data.',
     group: 'reference',
