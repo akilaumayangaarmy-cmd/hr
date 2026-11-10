@@ -41,6 +41,14 @@ interface MemberMergeResult {
   mergedColumns: string[];
 }
 
+interface DefaultDataResult {
+  oldId: number;
+  created: number;
+  existing: number;
+  createdTables: string[];
+  existingTables: string[];
+}
+
 function App() {
   const [tables, setTables] = useState<TargetTable[]>([]);
   const [selectedTable, setSelectedTable] = useState('');
@@ -48,9 +56,11 @@ function App() {
   const [mapping, setMapping] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState(false);
   const [mergeBusy, setMergeBusy] = useState(false);
+  const [defaultsBusy, setDefaultsBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<BatchResult | null>(null);
   const [mergeResult, setMergeResult] = useState<MemberMergeResult | null>(null);
+  const [defaultsResult, setDefaultsResult] = useState<DefaultDataResult | null>(null);
   const [error, setError] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -240,6 +250,21 @@ function App() {
     }
   }
 
+  async function createDefaultData() {
+    setDefaultsBusy(true);
+    setError('');
+    setDefaultsResult(null);
+    try {
+      const response = await fetch(`${API_URL}/create-default-data`, { method: 'POST' });
+      if (!response.ok) throw new Error(await responseMessage(response));
+      setDefaultsResult((await response.json()) as DefaultDataResult);
+    } catch (cause) {
+      setError(errorMessage(cause, 'Unable to create default master data.'));
+    } finally {
+      setDefaultsBusy(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -317,7 +342,7 @@ function App() {
           </details>
           <div className="import-footer">
             <div className="batch-note"><span className="info-icon">i</span> Imported in batches of {BATCH_SIZE.toLocaleString()} rows</div>
-            <button className="primary-button" onClick={startImport} disabled={busy || mergeBusy || !oldIdMapped || !upload.rows.length}>
+            <button className="primary-button" onClick={startImport} disabled={busy || mergeBusy || defaultsBusy || !oldIdMapped || !upload.rows.length}>
               {busy ? <><span className="spinner" /> Importing {progress}%</> : <>Start import <span>→</span></>}
             </button>
           </div>
@@ -331,10 +356,23 @@ function App() {
           {result.errors.length > 0 && <details className="error-details"><summary>View row errors</summary><div className="error-list">{result.errors.slice(0, 100).map((item, index) => <div key={`${item.sourceRow}-${item.field}-${index}`}><b>Row {item.sourceRow}{item.field ? ` · ${item.field}` : ''}</b><span>{item.message}</span></div>)}{result.errors.length > 100 && <p>Showing first 100 errors.</p>}</div></details>}
         </section>}
         <section className="step-card">
-          <div className="section-title"><span className="step-number">4</span><div><h2>Merge staged members</h2><p>Resolve staged reference values to master-data UUIDs, then insert or update temp_members by old_id. Matching members are updated with staged values.</p></div></div>
+          <div className="section-title"><span className="step-number">4</span><div><h2>Create default data</h2><p>Create missing default master records with old_id 999999999. Existing defaults are kept and reused for related foreign keys.</p></div></div>
+          <div className="import-footer">
+            <div className="batch-note"><span className="info-icon">i</span> Creates parent defaults before dependent master records.</div>
+            <button className="primary-button" onClick={createDefaultData} disabled={busy || mergeBusy || defaultsBusy}>
+              {defaultsBusy ? <><span className="spinner" /> Creating default data</> : <>Create Default data <span>→</span></>}
+            </button>
+          </div>
+          {defaultsResult && <div className="table-note" role="status">
+            <span className="info-icon">i</span>
+            <span>{defaultsResult.created} default records created; {defaultsResult.existing} already existed. Existing records were reused.</span>
+          </div>}
+        </section>
+        <section className="step-card">
+          <div className="section-title"><span className="step-number">5</span><div><h2>Merge staged members</h2><p>Resolve staged reference values to master-data UUIDs, then insert or update temp_members by old_id. Matching members are updated with staged values.</p></div></div>
           <div className="import-footer">
             <div className="batch-note"><span className="info-icon">i</span> Unmatched reference values use a per-table Default record (code DTN, old_id 999999999).</div>
-            <button className="primary-button" onClick={mergeStagedMembers} disabled={busy || mergeBusy}>
+            <button className="primary-button" onClick={mergeStagedMembers} disabled={busy || mergeBusy || defaultsBusy}>
               {mergeBusy ? <><span className="spinner" /> Merging staged members</> : <>Merge staged data <span>→</span></>}
             </button>
           </div>

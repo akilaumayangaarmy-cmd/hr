@@ -9,4 +9,9 @@ export class MemberMergeController {
   mergeMembers() {
     return this.memberMergeService.mergeMembers();
   }
+
+  @Post('create-default-data')
+  createDefaultData() {
+    return this.memberMergeService.createDefaultData();
+  }
 }

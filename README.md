@@ -27,12 +27,14 @@ The UI defaults to the API at `http://localhost:3000/api/migration`. Set `VITE_A
 - The selected database field is the staging column receiving each source value. Lookup values are not resolved or replaced; string values are preserved as supplied, and only type validation/conversion needed for Oracle number and date columns is applied. Lookup columns allow up to 255 bytes to hold names as well as IDs.
 - New lookup rows get generated UUIDs. Inserts and updates execute in a transaction per batch; rows that fail validation are reported while valid rows in that batch proceed.
 - Use **Merge staged members** at any time to merge the rows currently in `02_Temp_members_master_data` into `temp_members`, keyed by `old_id`; a new upload is not required. Lookup fields are resolved by `old_id` when numeric and by `name` when text. Branch lookup scopes matches by the resolved `bank_id`; when the bank is blank or unresolved, the branch field uses the default branch record. Blank lookup fields are skipped. Unmatched non-blank values use a per-lookup fallback record named `Default_<table>`, with code `DTN` and old_id `999999999`; required lookup columns without database defaults are populated when creating fallback records. Any fallback records and the member merge run in one transaction.
+- Use **Create Default data** to create missing `old_id = 999999999` rows in the configured master tables. Existing rows are reused; parent defaults are created first and their UUIDs are used in child foreign-key columns. Code is set to `DTN` where the table has a code column.
 
 ## API
 
 - `GET /api/migration/tables` returns target tables and column metadata.
 - `POST /api/migration/upsert` accepts `{ "tableKey": "...", "mappings": [{ "sourceIndex": 0, "target": "old_id" }], "records": [{ "sourceRow": 2, "values": [123] }] }`.
 - `POST /api/migration/merge-members` resolves staged member lookups and merges all rows from `02_Temp_members_master_data` into `temp_members`.
+- `POST /api/migration/create-default-data` creates missing default records in the configured master tables.
 
 ## Commands
 

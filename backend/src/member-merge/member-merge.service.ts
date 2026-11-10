@@ -12,6 +12,42 @@ import { OracleService } from '../oracle/oracle.service';
 const DESTINATION_TABLE = 'temp_members';
 const DEFAULT_OLD_ID = 999999999;
 
+interface DefaultMasterDefinition {
+  table: string;
+  nameColumn: string;
+  codeColumn?: string;
+  parent?: { column: string; table: string };
+}
+
+export const DEFAULT_MASTER_TABLES: DefaultMasterDefinition[] = [
+  { table: 'provinces', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'districts', nameColumn: 'name', codeColumn: 'code', parent: { column: 'provinceId', table: 'provinces' } },
+  { table: 'divisional_secretariats', nameColumn: 'name', codeColumn: 'code', parent: { column: 'districtId', table: 'districts' } },
+  { table: 'gn_divisions', nameColumn: 'name', codeColumn: 'code', parent: { column: 'divisional_secretariat_id', table: 'divisional_secretariats' } },
+  { table: 'appointments', nameColumn: 'title' },
+  { table: 'banks', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'branches', nameColumn: 'name', codeColumn: 'code', parent: { column: 'bank_id', table: 'banks' } },
+  { table: 'blood_groups', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'eye_colours', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'genders', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'races', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'religions', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'skin_colours', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'council_types', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'decorations', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'dependent_types', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'member_categories', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'nationalities', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'regiments', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'units', nameColumn: 'name', codeColumn: 'code', parent: { column: 'regiment_id', table: 'regiments' } },
+  { table: 'electorate_divisions', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'ranks', nameColumn: 'name', codeColumn: 'code', parent: { column: 'member_category_id', table: 'member_categories' } },
+  { table: 'trades', nameColumn: 'trade_name', codeColumn: 'trade_code' },
+  { table: 'grades', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'classes', nameColumn: 'name', codeColumn: 'code' },
+  { table: 'member_service_types', nameColumn: 'name', codeColumn: 'code' },
+];
+
 interface DatabaseColumn {
   name: string;
   dataType: string;
@@ -52,6 +88,111 @@ interface LookupRequest {
 @Injectable()
 export class MemberMergeService {
   constructor(private readonly oracle: OracleService) {}
+
+  async createDefaultData() {
+    return this.oracle.withConnection((connection) =>
+      this.oracle.withTransaction(connection, async () => {
+        const defaultIds = new Map<string, string>();
+        const createdTables: string[] = [];
+        const existingTables: string[] = [];
+
+        for (const definition of DEFAULT_MASTER_TABLES) {
+          const table = await this.resolveTable(connection, [definition.table]);
+          const idColumn = table.columns.get('id')?.name;
+          const nameColumn = table.columns.get(definition.nameColumn.toLowerCase())?.name;
+          const codeColumn = definition.codeColumn
+            ? table.columns.get(definition.codeColumn.toLowerCase())?.name
+            : undefined;
+          const oldIdColumn = table.columns.get('old_id')?.name;
+          if (!idColumn || !nameColumn || (definition.codeColumn && !codeColumn) || !oldIdColumn) {
+            throw new BadRequestException(
+              `Master table "${table.name}" is missing a required default-data column.`,
+            );
+          }
+
+          const existing = await connection.execute<Record<string, unknown>>(
+            `SELECT ${quoteIdent(true, idColumn)} AS "ID"
+FROM ${quoteIdent(true, table.name)}
+WHERE ${quoteIdent(true, oldIdColumn)} = :oldId`,
+            { oldId: DEFAULT_OLD_ID },
+            { outFormat: oracledb.OUT_FORMAT_OBJECT },
+          );
+          const rows = (existing.rows ?? []) as Array<{ ID?: unknown }>;
+          if (rows.length > 1) {
+            throw new BadRequestException(`Master table "${table.name}" has duplicate rows with old_id ${DEFAULT_OLD_ID}.`);
+          }
+          if (rows.length === 1) {
+            if (rows[0].ID == null) {
+              throw new BadRequestException(`Master table "${table.name}" has a default row without an id.`);
+            }
+            defaultIds.set(definition.table, String(rows[0].ID));
+            existingTables.push(table.name);
+            continue;
+          }
+
+          const parentId = definition.parent ? defaultIds.get(definition.parent.table) : undefined;
+          if (definition.parent && !parentId) {
+            throw new BadRequestException(
+              `Cannot create default data for "${table.name}" before its parent "${definition.parent.table}".`,
+            );
+          }
+          const id = randomUUID();
+          const values = new Map<string, string | number | Date>([
+            [idColumn, id],
+            [nameColumn, `Default_${table.name}`],
+            [oldIdColumn, DEFAULT_OLD_ID],
+          ]);
+          if (codeColumn) values.set(codeColumn, 'DTN');
+          const isActive = table.columns.get('is_active');
+          if (isActive) values.set(isActive.name, 1);
+          if (definition.parent) {
+            const parentColumn = table.columns.get(definition.parent.column.toLowerCase())?.name;
+            if (!parentColumn) {
+              throw new BadRequestException(
+                `Master table "${table.name}" is missing parent column "${definition.parent.column}".`,
+              );
+            }
+            values.set(parentColumn, parentId!);
+          }
+
+          for (const column of table.columns.values()) {
+            if (
+              column.nullable ||
+              column.defaultLength != null ||
+              values.has(column.name)
+            ) {
+              continue;
+            }
+            values.set(column.name, this.defaultRequiredValue(column, table.name));
+          }
+
+          const insertColumns = [...values.keys()];
+          const binds: Record<string, string | number | Date> = {};
+          const bindNames = insertColumns.map((column, index) => {
+            const bindName = `value${index}`;
+            binds[bindName] = values.get(column)!;
+            return `:${bindName}`;
+          });
+          await connection.execute(
+            `INSERT INTO ${quoteIdent(true, table.name)} (
+  ${insertColumns.map((column) => quoteIdent(true, column)).join(',\n  ')}
+) VALUES (${bindNames.join(', ')})`,
+            binds,
+          );
+          defaultIds.set(definition.table, id);
+          createdTables.push(table.name);
+        }
+
+        return {
+          oldId: DEFAULT_OLD_ID,
+          created: createdTables.length,
+          existing: existingTables.length,
+          createdTables,
+          existingTables,
+        };
+      }),
+    );
+  }
 
   async mergeMembers() {
     const memberTable = getTable(MEMBER_TABLE_KEY);
@@ -278,7 +419,10 @@ export class MemberMergeService {
     if (existing) return existing;
 
     const idColumn = table.columns.get('id')?.name;
-    const nameColumn = table.columns.get('name')?.name;
+    const defaultDefinition = DEFAULT_MASTER_TABLES.find(
+      (definition) => definition.table === table.name.toLowerCase(),
+    );
+    const nameColumn = table.columns.get(defaultDefinition?.nameColumn.toLowerCase() ?? 'name')?.name;
     const oldIdColumn = table.columns.get('old_id')?.name;
     if (!idColumn || !nameColumn || !oldIdColumn) {
       throw new BadRequestException(`Lookup table "${table.name}" must contain id, name, and old_id columns.`);
@@ -367,23 +511,31 @@ WHERE ${quoteIdent(true, state.oldIdColumn)} = :oldId`,
       return { id, created: false };
     }
 
-    const codeColumn = state.table.columns.get('code')?.name;
-    if (!codeColumn) throw new BadRequestException(`Lookup table "${state.table.name}" must contain a code column for its fallback.`);
+    const codeColumn =
+      state.table.columns.get(
+        DEFAULT_MASTER_TABLES.find((definition) => definition.table === state.table.name.toLowerCase())
+          ?.codeColumn?.toLowerCase() ?? 'code',
+      )?.name;
     const id = randomUUID();
     const requiredColumns = [...state.table.columns.values()].filter(
       (column) =>
         !column.nullable &&
         column.defaultLength == null &&
-        ![state.idColumn, state.nameColumn, codeColumn, state.oldIdColumn].includes(column.name),
+        ![state.idColumn, state.nameColumn, state.oldIdColumn].includes(column.name) &&
+        column.name !== codeColumn,
     );
     const binds: Record<string, string | number | Date> = {
       id,
       name: fallbackName,
-      code: 'DTN',
       oldId: DEFAULT_OLD_ID,
     };
-    const insertColumns = [state.idColumn, state.nameColumn, codeColumn, state.oldIdColumn];
-    const insertValues = [':id', ':name', ':code', ':oldId'];
+    const insertColumns = [state.idColumn, state.nameColumn, state.oldIdColumn];
+    const insertValues = [':id', ':name', ':oldId'];
+    if (codeColumn) {
+      insertColumns.splice(2, 0, codeColumn);
+      insertValues.splice(2, 0, ':code');
+      binds.code = 'DTN';
+    }
     for (const [index, column] of requiredColumns.entries()) {
       const bindName = `required${index}`;
       const type = column.dataType.toUpperCase();
@@ -455,6 +607,25 @@ FROM USER_TAB_COLUMNS WHERE TABLE_NAME = :tableName`,
       });
     }
     return { name: tableName, columns };
+  }
+
+  private defaultRequiredValue(column: DatabaseColumn, tableName: string): string | number | Date {
+    const type = column.dataType.toUpperCase();
+    if (type === 'NUMBER' || type === 'FLOAT' || type.startsWith('BINARY_')) {
+      return column.name.toLowerCase() === 'is_active' ? 1 : 0;
+    }
+    if (type === 'DATE' || type.startsWith('TIMESTAMP')) return new Date();
+    if (/^(CHAR|NCHAR|VARCHAR|VARCHAR2|NVARCHAR2|CLOB|NCLOB)$/.test(type)) {
+      return `Default_${tableName}`;
+    }
+    if (column.name.toLowerCase().endsWith('_id')) {
+      throw new BadRequestException(
+        `Cannot create default data for "${tableName}": foreign-key column "${column.name}" has no configured parent.`,
+      );
+    }
+    throw new BadRequestException(
+      `Cannot create default data for "${tableName}": required column "${column.name}" has unsupported type ${type}.`,
+    );
   }
 
   private resolveColumns(columns: ColumnDef[], table: DatabaseTable): Map<string, DatabaseColumn> {

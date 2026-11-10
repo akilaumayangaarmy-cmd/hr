@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { lookupResolutionKey, normalizeLookupValue } from './member-merge.service';
+import { DEFAULT_MASTER_TABLES, lookupResolutionKey, normalizeLookupValue } from './member-merge.service';
 
 describe('member merge lookup values', () => {
   it('resolves integer-like values by lookup old_id', () => {
@@ -39,5 +39,18 @@ describe('member merge lookup values', () => {
     const branch = normalizeLookupValue('116');
     if (!branch) throw new Error('Branch lookup value was not normalized');
     expect(lookupResolutionKey(branch, 'bank-1')).not.toBe(lookupResolutionKey(branch, 'bank-2'));
+  });
+
+  it('creates defaults in parent-before-child order and supports table-specific names', () => {
+    const tables = DEFAULT_MASTER_TABLES.map((definition) => definition.table);
+    expect(tables.indexOf('provinces')).toBeLessThan(tables.indexOf('districts'));
+    expect(tables.indexOf('banks')).toBeLessThan(tables.indexOf('branches'));
+    expect(tables.indexOf('regiments')).toBeLessThan(tables.indexOf('units'));
+    expect(tables.indexOf('member_categories')).toBeLessThan(tables.indexOf('ranks'));
+    expect(DEFAULT_MASTER_TABLES.find((definition) => definition.table === 'appointments')?.nameColumn).toBe('title');
+    expect(DEFAULT_MASTER_TABLES.find((definition) => definition.table === 'trades')).toMatchObject({
+      nameColumn: 'trade_name',
+      codeColumn: 'trade_code',
+    });
   });
 });
