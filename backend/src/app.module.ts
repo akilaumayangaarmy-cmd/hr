@@ -1,10 +1,8 @@
 import { Module } from '@nestjs/common';
-import { MigrationController } from './migration/migration.controller';
-import { MigrationService } from './migration/migration.service';
-import { OracleService } from './oracle/oracle.service';
+import { MemberMergeModule } from './member-merge/member-merge.module';
+import { MigrationModule } from './migration/migration.module';
 
 @Module({
-  controllers: [MigrationController],
-  providers: [MigrationService, OracleService],
+  imports: [MigrationModule, MemberMergeModule],
 })
 export class AppModule {}

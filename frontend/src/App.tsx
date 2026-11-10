@@ -32,14 +32,25 @@ interface BatchResult {
   errors: ImportError[];
 }
 
+interface MemberMergeResult {
+  sourceRows: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  lookupDefaultsCreated: number;
+  mergedColumns: string[];
+}
+
 function App() {
   const [tables, setTables] = useState<TargetTable[]>([]);
   const [selectedTable, setSelectedTable] = useState('');
   const [upload, setUpload] = useState<UploadData | null>(null);
   const [mapping, setMapping] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState(false);
+  const [mergeBusy, setMergeBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState<BatchResult | null>(null);
+  const [mergeResult, setMergeResult] = useState<MemberMergeResult | null>(null);
   const [error, setError] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -90,6 +101,7 @@ function App() {
     event.target.value = '';
     setError('');
     setResult(null);
+    setMergeResult(null);
     if (!file) return;
     setUpload(null);
     if (file.size > MAX_FILE_BYTES) {
@@ -150,6 +162,7 @@ function App() {
     if (!upload || !table || !oldIdMapped) return;
     setBusy(true);
     setError('');
+    setMergeResult(null);
     setResult({ received: 0, inserted: 0, updated: 0, unchanged: 0, errors: [] });
     setProgress(0);
     const mappings = Object.entries(mapping)
@@ -212,6 +225,21 @@ function App() {
     }
   }
 
+  async function mergeStagedMembers() {
+    setMergeBusy(true);
+    setError('');
+    setMergeResult(null);
+    try {
+      const response = await fetch(`${API_URL}/merge-members`, { method: 'POST' });
+      if (!response.ok) throw new Error(await responseMessage(response));
+      setMergeResult((await response.json()) as MemberMergeResult);
+    } catch (cause) {
+      setError(errorMessage(cause, 'Unable to merge staged members.'));
+    } finally {
+      setMergeBusy(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -237,7 +265,7 @@ function App() {
         <section className="step-card">
           <div className="section-title"><span className="step-number">1</span><div><h2>Choose destination</h2><p>Select the table to receive your spreadsheet rows.</p></div></div>
           <label className="field-label" htmlFor="table-select">TARGET TABLE</label>
-          <select id="table-select" value={selectedTable} onChange={(event) => { setSelectedTable(event.target.value); setResult(null); }}>
+          <select id="table-select" value={selectedTable} disabled={mergeBusy} onChange={(event) => { setSelectedTable(event.target.value); setResult(null); setMergeResult(null); }}>
             {tables.map((item) => <option key={item.key} value={item.key}>{item.label} · {item.key}</option>)}
           </select>
           {table && <div className="table-note"><span className="info-icon">i</span><span>{table.description} <b>Upsert key: {table.columns.find((column) => column.businessKey)?.name ?? 'old_id'}</b></span></div>}
@@ -245,7 +273,7 @@ function App() {
 
         <section className="step-card">
           <div className="section-title"><span className="step-number">2</span><div><h2>Upload spreadsheet</h2><p>Choose an Excel workbook or CSV file. Only the first sheet is used.</p></div></div>
-          <button className={`upload-zone ${upload ? 'has-file' : ''}`} onClick={() => fileInput.current?.click()} disabled={busy}>
+          <button className={`upload-zone ${upload ? 'has-file' : ''}`} onClick={() => fileInput.current?.click()} disabled={busy || mergeBusy}>
             <span className="upload-icon">{upload ? '✓' : '↑'}</span>
             <span className="upload-copy"><b>{upload ? upload.headers.length + ' columns · ' + upload.rows.length.toLocaleString() + ' rows' : 'Click to choose a file'}</b><small>{upload ? `Loaded from “${upload.sheetName}”` : 'XLSX, XLS, or CSV · up to 50 MB'}</small></span>
             {upload && <span className="replace-file">Replace file</span>}
@@ -289,7 +317,7 @@ function App() {
           </details>
           <div className="import-footer">
             <div className="batch-note"><span className="info-icon">i</span> Imported in batches of {BATCH_SIZE.toLocaleString()} rows</div>
-            <button className="primary-button" onClick={startImport} disabled={busy || !oldIdMapped || !upload.rows.length}>
+            <button className="primary-button" onClick={startImport} disabled={busy || mergeBusy || !oldIdMapped || !upload.rows.length}>
               {busy ? <><span className="spinner" /> Importing {progress}%</> : <>Start import <span>→</span></>}
             </button>
           </div>
@@ -302,6 +330,19 @@ function App() {
           {!busy && result.inserted === 0 && result.errors.length > 0 && <p role="status">No rows were inserted. Review the row errors below; required fields missing from the mapping prevent new rows from being added.</p>}
           {result.errors.length > 0 && <details className="error-details"><summary>View row errors</summary><div className="error-list">{result.errors.slice(0, 100).map((item, index) => <div key={`${item.sourceRow}-${item.field}-${index}`}><b>Row {item.sourceRow}{item.field ? ` · ${item.field}` : ''}</b><span>{item.message}</span></div>)}{result.errors.length > 100 && <p>Showing first 100 errors.</p>}</div></details>}
         </section>}
+        <section className="step-card">
+          <div className="section-title"><span className="step-number">4</span><div><h2>Merge staged members</h2><p>Resolve staged reference values to master-data UUIDs, then insert or update temp_members by old_id. Matching members are updated with staged values.</p></div></div>
+          <div className="import-footer">
+            <div className="batch-note"><span className="info-icon">i</span> Unmatched reference values use a per-table Default record (code DTN, old_id 999999999).</div>
+            <button className="primary-button" onClick={mergeStagedMembers} disabled={busy || mergeBusy}>
+              {mergeBusy ? <><span className="spinner" /> Merging staged members</> : <>Merge staged data <span>→</span></>}
+            </button>
+          </div>
+          {mergeResult && <div className="table-note" role="status">
+            <span className="info-icon">i</span>
+            <span>{mergeResult.sourceRows.toLocaleString()} staged rows: {mergeResult.inserted.toLocaleString()} inserted, {mergeResult.updated.toLocaleString()} updated, {mergeResult.unchanged.toLocaleString()} unchanged. {mergeResult.lookupDefaultsCreated.toLocaleString()} default lookup records created.</span>
+          </div>}
+        </section>
         <footer className="page-footer"><span>HR DATA MIGRATION</span><span>Excel import utility <i>·</i> Oracle merge</span></footer>
       </div>
     </main>
