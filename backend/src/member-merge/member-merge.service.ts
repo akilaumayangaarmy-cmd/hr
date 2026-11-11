@@ -11,6 +11,7 @@ import { OracleService } from '../oracle/oracle.service';
 
 const DESTINATION_TABLE = 'temp_members';
 const DEFAULT_OLD_ID = 999999999;
+const DEFAULT_LOOKUP_KEY = '__default__';
 
 interface DefaultMasterDefinition {
   table: string;
@@ -25,6 +26,7 @@ export const DEFAULT_MASTER_TABLES: DefaultMasterDefinition[] = [
   { table: 'divisional_secretariats', nameColumn: 'name', codeColumn: 'code', parent: { column: 'districtId', table: 'districts' } },
   { table: 'gn_divisions', nameColumn: 'name', codeColumn: 'code', parent: { column: 'divisional_secretariat_id', table: 'divisional_secretariats' } },
   { table: 'appointments', nameColumn: 'title' },
+  { table: 'sub_appointments', nameColumn: 'title', parent: { column: 'appointment_id', table: 'appointments' } },
   { table: 'banks', nameColumn: 'name', codeColumn: 'code' },
   { table: 'branches', nameColumn: 'name', codeColumn: 'code', parent: { column: 'bank_id', table: 'banks' } },
   { table: 'blood_groups', nameColumn: 'name', codeColumn: 'code' },
@@ -285,10 +287,14 @@ WHERE ${quoteIdent(true, oldIdColumn)} = :oldId`,
                 const raw = row[column.name];
                 if (column.lookup) {
                   const key = normalizeLookupValue(raw);
+                  const state = lookupInputs.states.get(column.lookup.table);
                   if (!key) {
-                    values[column.name] = null;
+                    const fallback = state?.resolved.get(DEFAULT_LOOKUP_KEY);
+                    if (!fallback) {
+                      throw new Error(`Default lookup value was not resolved for ${column.name}.`);
+                    }
+                    values[column.name] = fallback;
                   } else {
-                    const state = lookupInputs.states.get(column.lookup.table);
                     let parentId: string | null = null;
                     if (state?.parentColumn && state.parentLookupTable) {
                       const parentValue = normalizeLookupValue(row[state.parentColumn]);
@@ -361,8 +367,13 @@ WHERE ${quoteIdent(true, oldIdColumn)} = :oldId`,
     for (const column of lookupColumns) {
       if (!column.lookup) continue;
       const rawValues = rows.map((row) => ({ row, value: normalizeLookupValue(row[column.name]) }));
-      if (rawValues.every(({ value }) => value === null)) continue;
       const state = await this.getLookupState(connection, column.lookup.table, states);
+      if (rawValues.some(({ value }) => value === null) && !state.resolved.has(DEFAULT_LOOKUP_KEY)) {
+        const fallback = await this.ensureFallback(connection, state);
+        if (fallback.created) defaultsCreated += 1;
+        state.fallbackId = fallback.id;
+        state.resolved.set(DEFAULT_LOOKUP_KEY, fallback.id);
+      }
 
       const requested = new Map<string, LookupRequest>();
       for (const { row, value } of rawValues) {
@@ -378,6 +389,7 @@ WHERE ${quoteIdent(true, oldIdColumn)} = :oldId`,
             const fallback = await this.ensureFallback(connection, state);
             if (fallback.created) defaultsCreated += 1;
             state.fallbackId = fallback.id;
+            state.resolved.set(DEFAULT_LOOKUP_KEY, fallback.id);
             state.resolved.set(lookupResolutionKey(value, null), fallback.id);
             continue;
           }
@@ -395,6 +407,7 @@ WHERE ${quoteIdent(true, oldIdColumn)} = :oldId`,
         const fallback = await this.ensureFallback(connection, state);
         if (fallback.created) defaultsCreated += 1;
         state.fallbackId = fallback.id;
+        state.resolved.set(DEFAULT_LOOKUP_KEY, fallback.id);
         for (const request of missing) state.resolved.set(request.resolutionKey, fallback.id);
       }
     }
@@ -516,13 +529,31 @@ WHERE ${quoteIdent(true, state.oldIdColumn)} = :oldId`,
         DEFAULT_MASTER_TABLES.find((definition) => definition.table === state.table.name.toLowerCase())
           ?.codeColumn?.toLowerCase() ?? 'code',
       )?.name;
+    const definition = DEFAULT_MASTER_TABLES.find(
+      (item) => item.table === state.table.name.toLowerCase(),
+    );
+    const parentColumn = definition?.parent
+      ? state.table.columns.get(definition.parent.column.toLowerCase())?.name
+      : undefined;
+    let parentId: string | undefined;
+    if (definition?.parent) {
+      if (!parentColumn) {
+        throw new BadRequestException(
+          `Lookup table "${state.table.name}" is missing parent column "${definition.parent.column}".`,
+        );
+      }
+      const parentState = await this.getLookupState(connection, definition.parent.table, new Map());
+      const parentFallback = await this.ensureFallback(connection, parentState);
+      parentId = parentFallback.id;
+    }
     const id = randomUUID();
     const requiredColumns = [...state.table.columns.values()].filter(
       (column) =>
         !column.nullable &&
         column.defaultLength == null &&
         ![state.idColumn, state.nameColumn, state.oldIdColumn].includes(column.name) &&
-        column.name !== codeColumn,
+        column.name !== codeColumn &&
+        column.name !== parentColumn,
     );
     const binds: Record<string, string | number | Date> = {
       id,
@@ -531,6 +562,11 @@ WHERE ${quoteIdent(true, state.oldIdColumn)} = :oldId`,
     };
     const insertColumns = [state.idColumn, state.nameColumn, state.oldIdColumn];
     const insertValues = [':id', ':name', ':oldId'];
+    if (parentColumn && parentId) {
+      insertColumns.push(parentColumn);
+      insertValues.push(':parentId');
+      binds.parentId = parentId;
+    }
     if (codeColumn) {
       insertColumns.splice(2, 0, codeColumn);
       insertValues.splice(2, 0, ':code');
@@ -540,7 +576,7 @@ WHERE ${quoteIdent(true, state.oldIdColumn)} = :oldId`,
       const bindName = `required${index}`;
       const type = column.dataType.toUpperCase();
       if (type === 'NUMBER' || type === 'FLOAT' || type.startsWith('BINARY_')) {
-        binds[bindName] = 0;
+        binds[bindName] = column.name.toLowerCase() === 'is_active' ? 1 : 0;
       } else if (type === 'DATE' || type.startsWith('TIMESTAMP')) {
         binds[bindName] = new Date();
       } else if (/^(CHAR|NCHAR|VARCHAR|VARCHAR2|NVARCHAR2|CLOB|NCLOB)$/.test(type)) {

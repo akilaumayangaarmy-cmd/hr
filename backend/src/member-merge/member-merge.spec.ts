@@ -48,6 +48,11 @@ describe('member merge lookup values', () => {
     expect(tables.indexOf('regiments')).toBeLessThan(tables.indexOf('units'));
     expect(tables.indexOf('member_categories')).toBeLessThan(tables.indexOf('ranks'));
     expect(DEFAULT_MASTER_TABLES.find((definition) => definition.table === 'appointments')?.nameColumn).toBe('title');
+    expect(tables.indexOf('appointments')).toBeLessThan(tables.indexOf('sub_appointments'));
+    expect(DEFAULT_MASTER_TABLES.find((definition) => definition.table === 'sub_appointments')).toMatchObject({
+      nameColumn: 'title',
+      parent: { column: 'appointment_id', table: 'appointments' },
+    });
     expect(DEFAULT_MASTER_TABLES.find((definition) => definition.table === 'trades')).toMatchObject({
       nameColumn: 'trade_name',
       codeColumn: 'trade_code',
